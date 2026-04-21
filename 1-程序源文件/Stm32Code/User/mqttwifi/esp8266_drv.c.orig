@@ -1,0 +1,531 @@
+#include "sys.h" // 系统级头文件，包含基础外设驱动和配置
+ 
+/* ESP8266模块全局状态结构体 */
+ESP8266_STR strEsp8266_info; // 存储ESP8266网络连接状态、指令状态等信息
+DATA_RCV_STR strEsp8266_rcv; // 串口接收缓冲区，用于调试或AT指令响应
+STR_MQTT_INFO strMqtt_Inof; // MQTT连接参数（设备名、密钥、主题等）
+
+/* AT指令配置表：命令、预期响应、超时时间、重试次数 */
+CMD_TYPE_STRUCT strEsp8266_cmd[20]={
+{.cmd="AT\r\n", .respond = "OK", .wait_time = 2000, .retry_cnt = 3}, // 基础AT指令测试
+{.cmd="AT\r\n", .respond = "OK", .wait_time = 2000, .retry_cnt = 3}, // 二次确认模块就绪
+{.cmd="AT+CWMODE=1\r\n", .respond = "OK", .wait_time = 2000, .retry_cnt = 3}, // 设置STA模式
+{.cmd="AT+RST\r\n", .respond = "OK", .wait_time = 2000, .retry_cnt = 3}, // 模块软复位
+{.cmd="AT+CWAUTOCONN=0\r\n", .respond = "OK", .wait_time = 2000, .retry_cnt = 3}, // 关闭自动重连
+{.cmd=" ", .respond = "OK", .wait_time = 10000, .retry_cnt = 3}, // 动态填充：连接WiFi（格式：AT+CWJAP="SSID","PWD"）
+{.cmd="AT+CIPMUX=0\r\n", .respond = "OK", .wait_time = 2000, .retry_cnt = 3}, // 单连接模式
+{.cmd="AT+CIPMODE=1\r\n", .respond = "OK", .wait_time = 2000, .retry_cnt = 3}, // 透传模式
+{.cmd=" ", .respond = "OK", .wait_time = 2000, .retry_cnt = 3}, // 动态填充：TCP连接（格式：AT+CIPSTART="TCP","IP",PORT）
+{.cmd="AT+CIPSEND\r\n", .respond = "\r\nOK\r\n\r\n>", .wait_time = 2000, .retry_cnt = 3}, // 进入数据发送模式
+};
+
+/************************************
+
+函数名：WIFI_RESET_init
+
+功能：初始化ESP8266硬件复位引脚
+
+参数：无
+
+返回值：无
+************************************/
+void WIFI_RESET_init(void) {
+GPIO_InitTypeDef GPIO_InitStruct;
+RCC_APB2PeriphClockCmd(ESP8266_RESET_LCK, ENABLE); // 使能复位引脚时钟
+
+GPIO_InitStruct.GPIO_Pin = ESP8266_RESET_PIN; // 配置引脚为推挽输出
+GPIO_InitStruct.GPIO_Mode = GPIO_Mode_Out_PP;
+GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+GPIO_Init(ESP8266_RESET_PORT, &GPIO_InitStruct);
+}
+
+ 
+/************************************
+
+函数名：get_sys_tick
+
+功能：获取系统当前时间戳（单位：毫秒）
+
+参数：无
+
+返回值：系统时间戳
+************************************/
+unsigned int get_sys_tick(void) {
+return sysTickUptime; // 依赖系统时钟实现（如HAL_GetTick()）
+}
+
+
+
+/************************************
+
+函数名：send_data_to_dev
+
+功能：通过USART2发送数据到ESP8266模块
+
+参数：data-待发送数据指针；len-数据长度
+
+返回值：无
+************************************/
+void send_data_to_dev(char *data, unsigned short len) {
+unsigned int i;
+for (i = 0; i < len; i++) { // 轮询方式逐字节发送
+while (!(USART2->SR & USART_FLAG_TXE)); // 等待发送缓冲区空
+USART2->DR = data[i]; // 写入数据寄存器
+while (!(USART2->SR & USART_FLAG_TC)); // 等待发送完成
+}
+}
+
+/************************************
+
+函数名：fputc
+
+功能：重定向printf到串口（当前未启用）
+
+参数：ch-字符；f-文件指针
+
+返回值：发送的字符
+************************************/
+int fputc(int ch , FILE *f) {
+// 示例：HAL_UART_Transmit(&huart2, (uint8_t *)&ch, 1, 1000);
+return ch;
+}
+
+
+/************************************
+
+函数名：USART_rcv_ch
+
+功能：将接收到的字符存入缓冲区，并更新接收状态
+
+参数：ch-接收的字符；str_rcv-接收缓冲区结构体指针
+
+返回值：无
+************************************/
+void USART_rcv_ch(unsigned char ch, DATA_RCV_STR *str_rcv) {
+if (str_rcv->rcv_cnt < 256) { // 缓冲区未满时存入
+str_rcv->buff[str_rcv->rcv_cnt] = ch;
+str_rcv->rcv_cnt++;
+str_rcv->rcv_trick_ms = get_sys_tick(); // 更新最后接收时间戳
+}
+}
+
+//void USART_ClearFlag(USART_TypeDef* USARTx, uint16_t USART_FLAG)
+//{
+//    /* Check the parameters */
+//    assert_param(IS_USART_ALL_PERIPH(USARTx));
+//    assert_param(IS_USART_CLEAR_FLAG(USART_FLAG));
+//    assert_param(IS_USART_PERIPH_FLAG(USARTx, USART_FLAG)); /* The CTS flag is not available for UART4 and UART5 */   
+
+//    USARTx->SR = (uint16_t)~USART_FLAG;
+//}
+
+/************************************
+
+函数名：USARTx_RCVHandler
+
+功能：通用USART接收中断处理函数
+
+参数：USARTX-串口外设指针
+
+返回值：无
+************************************/
+void USARTx_RCVHandler(USART_TypeDef *USARTX) {
+unsigned char ch;
+if((USARTX->SR & USART_FLAG_RXNE) || (USARTX->SR & USART_FLAG_ORE)) {
+ch = USARTX->DR; // 读取数据寄存器以清除标志位
+USART_ClearFlag(USARTX, USART_FLAG_RXNE);
+if (USARTX == USART2) { // 仅处理USART2的数据（ESP8266通信）
+USART_rcv_ch(ch, &strEsp8266_rcv); // 存入接收缓冲区
+}
+}
+}
+
+/************************************
+
+函数名：USART2_IRQHandler
+
+功能：USART2中断服务函数，调用通用处理逻辑
+
+参数：无
+
+返回值：无
+************************************/
+void USART2_IRQHandler(void) {
+USARTx_RCVHandler(USART2);
+}
+//返回值
+/************************************
+
+函数名：write_cmd
+
+功能：发送AT指令并等待响应，处理重试逻辑
+
+参数：strCMD-指令结构体指针
+
+返回值：1-成功；2-超时；0-处理中
+************************************/
+unsigned char write_cmd(CMD_TYPE_STRUCT *strCMD) {
+char *pStr = NULL;
+if (strEsp8266_info.Cmd_stu == 0) { // 状态0：发送指令
+send_data_to_dev(strCMD->cmd, strlen(strCMD->cmd)); // 发送指令
+strEsp8266_info.Cmd_stu = 1; // 切换为等待响应状态
+strEsp8266_info.cmd_send_trick = get_sys_tick(); // 记录发送时间
+memset(strEsp8266_rcv.buff,0,256); // 清空接收缓冲区
+strEsp8266_rcv.rcv_cnt = 0;
+} else if (strEsp8266_info.Cmd_stu == 1) { // 状态1：等待响应
+if (get_sys_tick() - strEsp8266_info.cmd_send_trick < strCMD->wait_time) {
+if (strEsp8266_rcv.rcv_cnt >= 2) { // 至少接收到2字节后开始匹配
+pStr = strstr((char *)strEsp8266_rcv.buff, strCMD->respond);
+if (pStr) { // 匹配到预期响应
+strEsp8266_info.Cmd_stu = 0;
+strEsp8266_info.retry_cnt = 0;
+return 1; // 成功
+}
+}
+} else { // 超时处理
+strEsp8266_info.Cmd_stu = 0;
+strEsp8266_info.retry_cnt++;
+if(strEsp8266_info.retry_cnt > strCMD->retry_cnt) {
+strEsp8266_info.retry_cnt = 0;
+return 2; // 重试次数耗尽，返回失败
+}
+}
+}
+return 0; // 处理中
+}
+
+
+
+/************************************
+
+函数名：ESP8266_reset
+
+功能：硬件复位ESP8266模块（拉低复位引脚250ms后恢复）
+
+参数：无
+
+返回值：1-复位完成；0-处理中
+************************************/
+unsigned char ESP8266_reset(void) {
+static unsigned int reset_start_cnt = 0;
+static unsigned char reset_stu = 0;
+if (reset_stu == 0) { // 阶段0：拉低复位引脚
+reset_stu = 1;
+reset_start_cnt = get_sys_tick();
+ESP8266_RESET_SET_L; // 拉低
+} else if (reset_stu == 1) { // 阶段1：保持低电平250ms
+if (get_sys_tick() - reset_start_cnt > 250) {
+reset_stu = 2;
+reset_start_cnt = get_sys_tick();
+ESP8266_RESET_SET_H; // 恢复高电平
+}
+} else if (reset_stu == 2) { // 阶段2：等待250ms后完成
+if (get_sys_tick() - reset_start_cnt > 250) {
+reset_stu = 0;
+return 1; // 复位完成
+}
+}
+return 0; // 处理中
+}
+
+
+//#define ID   "Xiaomi-bghs"                     
+//#define PASSWORD   "4cyeq7pc" 
+
+char ServerIP[128]={"47.109.89.8"};  // MQTT服务器IP地址
+int  ServerPort = 1883;               // MQTT服务器端口号
+
+/************************************
+ * 函数名：ESP8266_run_handle
+ * 功能：ESP8266主状态机，管理网络连接、AT指令流程和MQTT通信
+ * 参数：无
+ * 返回值：无
+ ************************************/
+void ESP8266_run_handle(void)
+{
+    unsigned char ret;                     // 指令执行结果临时变量
+    static unsigned int last_mqtt_heart_cnt = 0;  // MQTT心跳包发送计时器（单位：毫秒）
+    static unsigned int last_subscirbe_tick = 0;  // 订阅主题重试计时器（单位：毫秒）
+     Scheduled();//定时发送数据函数  
+    /* 状态1：初始状态或需要复位 */
+    if (strEsp8266_info.Net_stu == NET_NULL)
+    {
+        // 执行硬件复位流程
+        if (ESP8266_reset())               // 复位成功返回1
+        {
+            strEsp8266_info.Net_stu = 1;   // 进入下一状态（AT指令流程）
+            // 动态填充AT指令：连接WiFi（ID和PASSWORD为预定义的SSID和密码）
+            sprintf(strEsp8266_cmd[5].cmd,"AT+CWJAP=\"%s\",\"%s\"\r\n", ID, PASSWORD);
+            // 修改预期响应为"CONNECTED"（WiFi连接成功标志）
+            sprintf(strEsp8266_cmd[5].respond,"CONNECTED");
+            // 动态填充AT指令：建立TCP连接（ServerIP和ServerPort为MQTT服务器参数）
+            sprintf(strEsp8266_cmd[8].cmd,"AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", ServerIP, ServerPort);
+        }
+    }
+    /* 状态2：AT指令执行阶段（从NET_RESET到NET_CIPSEND） */
+    else if (strEsp8266_info.Net_stu > 0 && strEsp8266_info.Net_stu <= NET_CIPSEND)
+    {
+        // 发送当前状态对应的AT指令，并等待响应
+        ret = write_cmd(&strEsp8266_cmd[strEsp8266_info.Net_stu]); // 参数：指令结构体指针
+        if (ret == 1)           // 指令响应成功
+        {
+            strEsp8266_info.Net_stu++;     // 切换到下一个AT指令状态
+            // 所有AT指令执行完毕（进入透传模式）
+            if (strEsp8266_info.Net_stu > NET_CIPSEND)
+            {
+                memset(strEsp8266_rcv.buff,0,256);  // 清空接收缓冲区
+                strEsp8266_rcv.rcv_cnt = 0;          // 接收字符计数器归零
+                MQTT_Buff_Init();                    // 初始化MQTT协议缓冲区（需外部实现）
+            }
+        }
+        else if (ret == 2)      // 指令响应超时或重试次数耗尽
+        {
+            strEsp8266_info.Net_stu = NET_NULL;  // 重置状态，触发重新连接流程
+        }
+    }
+    /* 状态3：TCP连接成功后维持MQTT通信 */
+    else 
+    {
+        period_get_server();    // 周期处理服务器数据（需外部实现，如解析MQTT报文）
+        
+        /* 心跳包逻辑：每3秒发送一次MQTT Ping */
+        if (get_sys_tick() - last_mqtt_heart_cnt >= 3*1000)
+        {
+            last_mqtt_heart_cnt = get_sys_tick();  // 重置计时器
+            mqtt_Ping();                           // 发送MQTT心跳包（需外部实现）
+        }
+        
+        /* 订阅逻辑：连接成功但未订阅时，每秒尝试订阅一次 */
+        if (ConnectPack_flag && !SubscribePack_flag) // ConnectPack_flag为MQTT连接标志
+        {
+            if (get_sys_tick() - last_subscirbe_tick >= 1000)
+            {
+                last_subscirbe_tick = get_sys_tick();  // 重置计时器
+                Mqtt_Subscribe(strMqtt_Inof.sub, 1);   // 订阅主题（sub为动态生成的主题名）
+            }
+        }
+    
+        mqtt_Content();  // 处理MQTT数据内容（需外部实现，如处理发布/订阅消息）
+        
+        /* 连接保持检测：10秒内未收到数据则判定为断线 */
+        strEsp8266_info.rcv_idle_cnt = (get_sys_tick() - strEsp8266_rcv.rcv_trick_ms)/1000;
+        if (strEsp8266_info.rcv_idle_cnt > 10)  // 单位转换为秒
+        {
+            strEsp8266_info.Net_stu = NET_NULL;  // 重置连接状态
+            strEsp8266_info.offline_cnt++;      // 离线计数器累加（用于统计）
+        }
+    }
+    strEsp8266_info.run_heart++;  // 状态机运行计数器（调试用途，无实际功能）
+}
+//生成随机数的函数
+/*----------------------------------------------------------
+ * 函数名：get_round_num
+ * 功能：通过ADC采样生成6位随机数（基于硬件噪声特性）
+ * 实现原理：读取ADC通道原始值，提取个位/十位数字叠加生成随机序列
+ * 返回值：6位十进制随机数（范围：000000-999999）
+ * 注：依赖ADC未连接外部信号时的本底噪声
+ *---------------------------------------------------------*/
+unsigned int get_round_num(void)
+{
+    unsigned short adc_res;      // ADC原始采样值（12位精度）
+    unsigned int round_num = 0;  // 生成的6位随机数
+    unsigned char i, S_bit, G_bit; // 临时变量：十位/个位数字
+
+    /* 时钟配置阶段 */
+    RCC->APB2ENR |= 0x204;        // 使能APB2总线时钟：bit2=ADC1, bit8=GPIOA
+    RCC->CFGR &= 0xFFFF3FFF;      // 清零ADC预分频器位（bit15-14）
+    RCC->CFGR |= 0x00008000;      // 设置ADC时钟=主时钟/6（72MHz/6=12MHz）
+
+    /* ADC初始化配置 */
+    ADC1->CR2  = 0X000E0000;      // 控制寄存器初始值：bit16-19=1110（保留位）
+    ADC1->CR2 |= 0X00000001;      // 使能ADC1（ADON位置1）
+
+    /* ADC校准流程 */
+    ADC1->CR2 |= 0X08;            // 初始化校准（CAL位置1）
+    while ((ADC1->CR2 & 0x08) != 0); // 等待校准初始化完成（CAL位自动清零）
+    
+    ADC1->CR2 |= 0X04;            // 开始校准（RSTCAL位置1）
+    while ((ADC1->CR2 & 0x04) != 0); // 等待校准完成（RSTCAL位自动清零）
+
+    /* 采样时间配置 */
+    ADC1->SMPR2 = 0X001C000;      // 通道4采样时间配置：480周期（bit14-12=111）
+
+    /* 随机数生成核心逻辑 */
+    for (i = 0; i < 6; i++)       // 生成6位随机数
+    {
+        ADC1->CR2 |= 0X00500000;  // 启动单次转换：bit22=SWSTART（启动）, bit20=EXTTRIG（使能触发）
+        while (!(ADC1->SR & 0x02)); // 等待转换完成（EOC位置1）
+        adc_res = ADC1->DR;       // 读取转换结果（自动清除EOC标志）
+
+        /* 数字处理：取ADC值的个位和十位相加 */
+        G_bit = adc_res%10;       // 提取个位数字（0-9）
+        S_bit = (adc_res/10)%10;  // 提取十位数字（0-9）
+        S_bit += G_bit;           // 数字叠加（0-18）
+        
+        /* 构建6位数：每次循环左移1位并叠加新值 */
+        round_num *= 10;          // 十进制左移（等效于<<4位二进制）
+        round_num += S_bit;       // 添加新生成的数字（实际取S_bit%10更合理，代码未实现）
+    }
+    
+    return round_num; // 示例：ADC采样值为1234 → G=4, S=3 → 7 → 最终数类似777777（需改进算法）
+}
+ 
+
+
+//此处宏定义不作为MQTT连接参数  只作为MQTT连接参数和随机数拼接时的原参
+#define  DEVICENAME      "DEVICENAME" 
+#define  PRODUCTKEY      "PRODUCTKEY"
+#define  DEVICESECRE     "DEVICESECRE" 
+#define  SUBSCRIBE_TOPIC  "Sub"      
+#define  P_TOPIC_NAME     "Pub"     
+void Mqtt_Parameter_init(void){
+
+	
+	 memset((char *)&strMqtt_Inof,0,sizeof(strMqtt_Inof));
+   strMqtt_Inof.Round_num=get_round_num()%1000000;//随机数赋值
+	  //给mqtt连接参数赋予随机数
+	 sprintf(strMqtt_Inof.device_name,"%s%06d",DEVICENAME,strMqtt_Inof.Round_num) ;
+	 sprintf(strMqtt_Inof.key,"%s%06d",PRODUCTKEY,strMqtt_Inof.Round_num) ;
+	 sprintf(strMqtt_Inof.secre,"%s%06d",DEVICESECRE,strMqtt_Inof.Round_num) ;
+	 sprintf(strMqtt_Inof.sub,"%s%06d",SUBSCRIBE_TOPIC,strMqtt_Inof.Round_num) ;
+	 sprintf(strMqtt_Inof.pub,"%s%06d",P_TOPIC_NAME,strMqtt_Inof.Round_num) ;
+}
+
+
+//向MQTT服务器发布消息
+void mqttPublic(void)
+{
+    char Send[256];
+    sprintf(Send,
+            "{\"sensor1\":%d,\"sensor2\":%d,\"sensor3\":%d,\"sensor4\":%d,\"sensor5\":%d,\"sensor6\":%d,\"sensor7\":%d,\"sensor8\":%d,\"sensor9\":%d,\"sensor10\":%d,\"sensor11\":%d,\"sensor12\":%d,\"sensor13\":%d,\"sensor14\":%d,\"sensor15\":%d,\"sensor16\":%d,\"sensor17\":%d}",
+            SensorData.Fumes, SensorData.Lllumination, SensorData.TempInt, SensorData.HumiInt, SensorData.Flame, System.BurglarFlag, SensorData.HumanBody, Threshold.Smoke_Threshold, Threshold.Lighting_Threshold,
+            Threshold.Temperature_Threshold, Threshold.Humidity_Threshold,System.Fan,System.Water_Pump, System.Lamplight,System.Air_Conditioning, System.Curtain,System.Buzzer);
+    //烟雾 光照  温度  湿度	火焰	防盗状态 人体监测		烟雾阈值  光照阈值   温度阈值  湿度阈值
+    mqtt_PublishQs0(strMqtt_Inof.pub, Send, strlen(Send));
+}
+/*-------------------------------------------
+ * 函数名：Scheduled
+ * 功能：定时触发MQTT数据发布（1秒周期）
+ * 实现逻辑：
+ *   1. 每隔1秒设置发布标志位
+ *   2. 当标志位有效且网络/订阅状态就绪时执行发布
+ * 依赖条件：
+ *   - strEsp8266_info.Net_stu > NET_CIPSEND：网络透传模式已建立
+ *   - SubscribePack_flag：MQTT主题订阅成功标志
+ *-------------------------------------------*/
+void Scheduled (void)
+{
+    static unsigned int mqtt_pub_cnt = 0 ;  // 发布周期计时器（单位：毫秒）
+    
+    /* 定时器逻辑：每秒触发一次标志位 */
+    if (get_sys_tick() - mqtt_pub_cnt >= 1000)  // 检测1秒间隔
+    {
+        mqtt_pub_cnt = get_sys_tick();        // 重置计时器
+        System.mqttflag = 1;                  // 设置MQTT发布触发标志
+    }
+    
+    /* 发布执行逻辑 */
+    if(System.mqttflag)  // 标志位有效时进入
+    {
+        /* 网络和订阅状态双重验证 */
+        if (strEsp8266_info.Net_stu > NET_CIPSEND && SubscribePack_flag) 
+        {
+            mqttPublic();  // 执行MQTT数据发布（向预设主题发送消息）
+        }
+        System.mqttflag = 0;  // 强制清除标志位（无论是否成功发布）
+    }
+}
+
+
+     /*******************************
+       显示链接参数
+    	 NET:是连接状态  数字5是没开热点 数字9是热点没有网络
+		   MQ_CNT:是服务器连接状态 0是没有连接  1是连接成功    后面一个数字表示重连次数
+       Name:需用用手机开启的热点名称
+       Pass:热点密码
+       热点频段必须是2.4		
+    	******************/
+void MqttCon_Display(void){
+        oled_ShowString(0, 0, (unsigned char *)"NET:", 16);
+        oled_ShowString(0, 2, (unsigned char *)"MQ_CNT", 16);
+        OLED_ShowDNum(60, 0, strEsp8266_info.Net_stu, 16);
+        OLED_ShowDNum(60, 2, strEsp8266_info.MQTT_Connect_flag, 16);
+        OLED_ShowDNum(100, 2, strEsp8266_info.offline_cnt, 16);
+        oled_ShowString(16 * 0, 2 * 2, (u8 *)"Name:", 16);
+			  oled_ShowString(16 * 3, 2 * 2, (u8 *)ID, 16);
+        oled_ShowString(16 * 0, 2 * 3, (u8 *)"Pass:", 16);
+			  oled_ShowString(16 * 3, 2 * 3, (u8 *)PASSWORD, 16);
+        //        oled_ShowString(0, 2, (unsigned char *)"CMD", 16);
+        //        oled_ShowString(0, 4, (unsigned char *)"RCV_CN", 16);
+        //        OLED_ShowDNum(60, 2, strEsp8266_info.run_heart, 16);
+        //        OLED_ShowDNum(60, 4, strEsp8266_info.rcv_idle_cnt, 16);
+}
+
+	       /**************
+    	显示生成的订阅主题和发布主题
+		  为了避免高并发的出现采用随机数拼接的方法来生成主题
+		  在app上只需要按照显示屏出现的主题来填写 每一次重启单片机都会生成不同的主题
+    	********************/
+void Topic_Display(void){
+
+        oled_ShowString(16 * 0, 2 * 0, (u8 *)"Sub:", 16);
+        oled_ShowString(16 * 0, 2 * 1, (u8 *)strMqtt_Inof.pub, 16);
+        oled_ShowString(16 * 0, 2 * 2, (u8 *)"Pub:", 16);
+        oled_ShowString(16 * 0, 2 * 3, (u8 *)strMqtt_Inof.sub, 16);
+
+}
+
+
+/*********
+ if ((isKey1) && (InterFace == 0)) { //若按键1按下
+        isKey1 = isKey2 = isKey3 = isKey4 = 0; //清除按键按下标志
+        oled_Clear();
+        OperateMode++;
+    }
+
+
+
+   if ((isKey1) && (InterFace != 0)) {
+        InterFace = 0;
+        isKey1 = 0;
+        oled_Clear();
+    }
+
+ //标志位限制
+    if (OperateMode >= 4) {
+        OperateMode = 0;
+    }
+
+
+//在显示页面使用按键切换不同的页面
+    if (isKey2) {
+        isKey2 = 0;
+        oled_Clear();
+        InterFace = 1;
+    }
+
+    if (isKey3) {
+        isKey3 = 0;
+        oled_Clear();
+        InterFace = 2;
+    }
+
+    if (isKey4) {
+        isKey4 = 0;
+        oled_Clear();
+        InterFace = 3;
+    }
+
+
+
+//调用显示mqtt连接状态参数
+    if (InterFace == 2) {
+     MqttCon_Display();
+    }
+
+//调用显示订阅主题的参数
+    if (InterFace == 3) {
+    Topic_Display();    
+    }
+
+********/

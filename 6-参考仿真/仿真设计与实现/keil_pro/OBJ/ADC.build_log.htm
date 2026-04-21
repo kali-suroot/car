@@ -1,0 +1,106 @@
+<html>
+<body>
+<pre>
+<h1>礦ision Build Log</h1>
+<h2>Tool Versions:</h2>
+IDE-Version: μVision V5.14.0.0
+Copyright (C) 2015 ARM Ltd and ARM Germany GmbH. All rights reserved.
+License Information: 3434 Administrator, 123, LIC=----
+ 
+Tool Versions:
+Toolchain:       MDK-Lite  Version: 5.14.0.0
+Toolchain Path:  D:\software\keil5\ARM\ARMCC\Bin
+C Compiler:      Armcc.exe V5.05 update 1 (build 106)
+Assembler:       Armasm.exe V5.05 update 1 (build 106)
+Linker/Locator:  ArmLink.exe V5.05 update 1 (build 106)
+Library Manager: ArmAr.exe V5.05 update 1 (build 106)
+Hex Converter:   FromElf.exe V5.05 update 1 (build 106)
+CPU DLL:         SARMCM3.DLL V5.14.0.0
+Dialog DLL:      DARMSTM.DLL V1.65.0.0
+Target DLL:      STLink\ST-LINKIII-KEIL_SWO.dll V2.0.14.0_KEIL
+Dialog DLL:      TARMSTM.DLL V1.64.0.0
+ 
+<h2>Project:</h2>
+C:\Users\Administrator\Desktop\7汽车防盗系统\keil_pro\USER\USMART.uvprojx
+Project File Date:  05/21/2024
+
+<h2>Output:</h2>
+Build target 'Target 1'
+compiling main.c...
+main.c(12): warning:  #47-D: incompatible redefinition of macro "KEY1" (declared at line 24 of "..\HARDWARE\KEY\key.h")
+  #define KEY1  GPIO_ReadInputDataBit(GPIOB,GPIO_Pin_1)//读取按键1
+main.c(13): warning:  #47-D: incompatible redefinition of macro "KEY2" (declared at line 25 of "..\HARDWARE\KEY\key.h")
+  #define KEY2  GPIO_ReadInputDataBit(GPIOB,GPIO_Pin_2)//读取按键2 
+main.c(14): warning:  #47-D: incompatible redefinition of macro "KEY3" (declared at line 26 of "..\HARDWARE\KEY\key.h")
+  #define KEY3  GPIO_ReadInputDataBit(GPIOB,GPIO_Pin_3)//读取按键3(WK_UP) 
+main.c(193): warning:  #223-D: function "sprintf" declared implicitly
+                                                        sprintf(buf, "汽车防盗系统");           
+main.c(194): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                        LCD_P14x16Str(20, 0, buf);
+main.c(196): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                        LCD_P14x16Str(0, 2, buf);
+main.c(198): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                        LCD_P8x16Str(45, 2, buf);                                                                       
+main.c(204): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                        LCD_P8x16Str(0, 4, buf);
+main.c(206): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                        LCD_P8x16Str(20, 4, buf);
+main.c(211): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                        LCD_P8x16Str(65, 4, buf);
+main.c(213): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                        LCD_P8x16Str(85, 4, buf);
+main.c(226): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                                                LCD_P14x16Str(65, 6, buf);
+main.c(259): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                                                                LCD_P14x16Str(0, 6, buf);
+main.c(264): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                                                    LCD_P8x16Str(0, 6, buf);
+main.c(271): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                                                LCD_P8x16Str(65, 6, buf);
+main.c(285): warning:  #223-D: function "sprintf" declared implicitly
+                                                         sprintf(buf, "阈值设置");              
+main.c(286): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                         LCD_P14x16Str(30, 0, buf);
+main.c(288): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                         LCD_P14x16Str(10, 2, buf);
+main.c(290): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                         LCD_P8x16Str(80, 2, buf);
+main.c(293): warning:  #167-D: argument of type "char *" is incompatible with parameter of type "unsigned char *"
+                                                         LCD_P8x16Str(0, 2, buf);
+main.c(164): warning:  #177-D: variable "aa" was declared but never referenced
+        uint16_t val,aa,va22,aa1,va11,aa22,flagqp=0,wds=31,tds=60,phs=40,zds=40,flagqq=0;
+main.c(164): warning:  #177-D: variable "va11" was declared but never referenced
+        uint16_t val,aa,va22,aa1,va11,aa22,flagqp=0,wds=31,tds=60,phs=40,zds=40,flagqq=0;
+main.c(164): warning:  #177-D: variable "tds" was declared but never referenced
+        uint16_t val,aa,va22,aa1,va11,aa22,flagqp=0,wds=31,tds=60,phs=40,zds=40,flagqq=0;
+main.c(164): warning:  #177-D: variable "phs" was declared but never referenced
+        uint16_t val,aa,va22,aa1,va11,aa22,flagqp=0,wds=31,tds=60,phs=40,zds=40,flagqq=0;
+main.c(164): warning:  #177-D: variable "zds" was declared but never referenced
+        uint16_t val,aa,va22,aa1,va11,aa22,flagqp=0,wds=31,tds=60,phs=40,zds=40,flagqq=0;
+main.c(164): warning:  #177-D: variable "flagqq" was declared but never referenced
+        uint16_t val,aa,va22,aa1,va11,aa22,flagqp=0,wds=31,tds=60,phs=40,zds=40,flagqq=0;
+main.c: 26 warnings, 0 errors
+linking...
+Program Size: Code=12462 RO-data=3538 RW-data=844 ZI-data=1836  
+FromELF: creating hex file...
+"..\OBJ\ADC.axf" - 0 Error(s), 26 Warning(s).
+
+<h2>Software Packages used:</h2>
+
+Package Vendor: ARM
+                http://www.keil.com/pack/ARM.CMSIS.4.2.0.pack
+                ARM::CMSIS:CORE:3.40.0
+                CMSIS (Cortex Microcontroller Software Interface Standard)
+   * Component: CORE Version: 3.40.0
+
+<h2>Collection of Component include folders:</h2>
+  C:\Users\Administrator\Desktop\7汽车防盗系统\keil_pro\USER\RTE
+  D:\software\keil5\ARM\PACK\ARM\CMSIS\4.2.0\CMSIS\Include
+
+<h2>Collection of Component Files used:</h2>
+
+   * Component: ARM::CMSIS:CORE:3.40.0
+      Source file:   CMSIS\UserCodeTemplates\ARM\ITM_Retarget.c
+</pre>
+</body>
+</html>
